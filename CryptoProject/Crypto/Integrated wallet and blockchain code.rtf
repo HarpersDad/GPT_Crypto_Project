@@ -1,0 +1,253 @@
+{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}}
+{\colortbl ;\red0\green0\blue255;}
+{\*\generator Riched20 10.0.19041}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\f0\fs22\lang9 import hashlib\par
+import json\par
+from time import time\par
+from urllib.parse import urlparse\par
+import socket\par
+import threading\par
+import rsa\par
+\par
+class CryptoWallet:\par
+    def __init__(self):\par
+        self.public_key = None\par
+        self.private_key = None\par
+        self.generate_key_pair()\par
+\par
+    def generate_key_pair(self):\par
+        """\par
+        Generate a new public-private key pair\par
+        """\par
+        self.public_key, self.private_key = rsa.newkeys(512)\par
+\par
+    def generate_address(self):\par
+        """\par
+        Generate wallet address from public key\par
+        """\par
+        if not self.public_key:\par
+            raise ValueError("Public key not generated")\par
+        return hashlib.sha256(self.public_key.save_pkcs1()).hexdigest()\par
+\par
+    def sign_transaction(self, transaction):\par
+        """\par
+        Sign a transaction with the private key\par
+        """\par
+        if not self.private_key:\par
+            raise ValueError("Private key not generated")\par
+\par
+        transaction_string = json.dumps(transaction, sort_keys=True)\par
+        signature = rsa.sign(transaction_string.encode(), self.private_key, 'SHA-256')\par
+        return signature\par
+\par
+    @staticmethod\par
+    def verify_transaction(transaction, public_key, signature):\par
+        """\par
+        Verify the signature of a transaction\par
+        """\par
+        if not public_key:\par
+            raise ValueError("Public key not provided")\par
+\par
+        try:\par
+            transaction_string = json.dumps(transaction, sort_keys=True)\par
+            rsa.verify(transaction_string.encode(), signature, rsa.PublicKey.load_pkcs1(public_key))\par
+            return True\par
+        except rsa.VerificationError:\par
+            return False\par
+\par
+\par
+class Blockchain:\par
+    def __init__(self):\par
+        self.chain = []\par
+        self.current_transactions = []\par
+        self.nodes = set()  # Set to store network nodes\par
+\par
+        # Create the genesis block\par
+        self.new_block(previous_hash='1', proof=100)\par
+\par
+    def register_node(self, address):\par
+        """\par
+        Add a new node to the list of nodes\par
+        :param address: <str> Address of node. Eg. '{{\field{\*\fldinst{HYPERLINK http://192.168.0.5:5000 }}{\fldrslt{http://192.168.0.5:5000\ul0\cf0}}}}\f0\fs22 '\par
+        :return: None\par
+        """\par
+        parsed_url = urlparse(address)\par
+        self.nodes.add(parsed_url.netloc)\par
+\par
+    def valid_chain(self, chain):\par
+        """\par
+        Determine if a given blockchain is valid\par
+        :param chain: <list> A blockchain\par
+        :return: <bool> True if valid, False if not\par
+        """\par
+        last_block = chain[0]\par
+        current_index = 1\par
+\par
+        while current_index < len(chain):\par
+            block = chain[current_index]\par
+            if block['previous_hash'] != self.hash(last_block):\par
+                return False\par
+\par
+            if not self.valid_proof(last_block['proof'], block['proof']):\par
+                return False\par
+\par
+            last_block = block\par
+            current_index += 1\par
+\par
+        return True\par
+\par
+    def resolve_conflicts(self):\par
+        """\par
+        Consensus algorithm, resolves conflicts by replacing our chain with the longest one in the network\par
+        :return: <bool> True if our chain was replaced, False if not\par
+        """\par
+        neighbours = self.nodes\par
+        new_chain = None\par
+\par
+        # We're only looking for chains longer than ours\par
+        max_length = len(self.chain)\par
+\par
+        # Grab and verify the chains from all the nodes in our network\par
+        for node in neighbours:\par
+            try:\par
+                response = requests.get(f'http://\{node\}/chain', verify=False)\par
+\par
+                if response.status_code == 200:\par
+                    length = response.json()['length']\par
+                    chain = response.json()['chain']\par
+\par
+                    # Check if the length is longer and the chain is valid\par
+                    if length > max_length and self.valid_chain(chain):\par
+                        max_length = length\par
+                        new_chain = chain\par
+            except requests.exceptions.RequestException as e:\par
+                print(f"Error communicating with node \{node\}: \{e\}")\par
+\par
+        # Replace our chain if we discovered a new, valid chain longer than ours\par
+        if new_chain:\par
+            self.chain = new_chain\par
+            return True\par
+\par
+        return False\par
+\par
+    def new_block(self, proof, previous_hash=None):\par
+        """\par
+        Create a new Block in the Blockchain\par
+        :param proof: <int> The proof given by the Proof of Work algorithm\par
+        :param previous_hash: (Optional) <str> Hash of previous Block\par
+        :return: <dict> New Block\par
+        """\par
+\par
+        block = \{\par
+            'index': len(self.chain) + 1,\par
+            'timestamp': time(),\par
+            'transactions': self.current_transactions,\par
+            'proof': proof,\par
+            'previous_hash': previous_hash or self.hash(self.chain[-1]),\par
+        \}\par
+\par
+        # Reset the current list of transactions\par
+        self.current_transactions = []\par
+\par
+        self.chain.append(block)\par
+        return block\par
+\par
+    def new_transaction(self, sender, recipient, amount, signature):\par
+        """\par
+        Creates a new transaction to go into the next mined Block\par
+        :param sender: <str> Address of the Sender\par
+        :param recipient: <str> Address of the Recipient\par
+        :param amount: <int> Amount\par
+        :param signature: <str> Signature of the transaction\par
+        :return: <int> The index of the Block that will hold this transaction\par
+        """\par
+        transaction = \{\par
+            'sender': sender,\par
+            'recipient': recipient,\par
+            'amount': amount,\par
+            'signature': signature\par
+        \}\par
+\par
+        if not self.verify_transaction(transaction, sender, signature):\par
+            raise ValueError("Transaction signature is not valid.")\par
+\par
+        self.current_transactions.append(transaction)\par
+        return self.last_block['index'] + 1\par
+\par
+    @staticmethod\par
+    def hash(block):\par
+        """\par
+        Creates a SHA-256 hash of a Block\par
+        :param block: <dict> Block\par
+        :return: <str>\par
+        """\par
+\par
+        # We must make sure that the Dictionary is Ordered, or we'll have inconsistent hashes\par
+        block_string = json.dumps(block, sort_keys=True).encode()\par
+        return hashlib.sha256(block_string).hexdigest()\par
+\par
+    @staticmethod\par
+    def valid_proof(last_proof, proof):\par
+        """\par
+        Validates the Proof: Does hash(last_proof, proof) contain 4 leading zeroes?\par
+        :param last_proof: <int> Previous Proof\par
+        :param proof: <int> Current Proof\par
+        :return: <bool> True if correct, False if not.\par
+        """\par
+        guess = f'\{last_proof\}\{proof\}'.encode()\par
+        guess_hash = hashlib.sha256(guess).hexdigest()\par
+        return guess_hash[:4] == "0000"\par
+\par
+    @property\par
+    def last_block(self):\par
+        return self.chain[-1]\par
+\par
+\par
+# Instantiate the Node\par
+app = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\par
+app.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\par
+\par
+# Bind the socket to a public host, and a well-known port\par
+app.bind(('0.0.0.0', 5000))\par
+\par
+# Become a server socket\par
+app.listen(5)\par
+\par
+# Create a new blockchain\par
+blockchain = Blockchain()\par
+\par
+# Create a new wallet\par
+wallet = CryptoWallet()\par
+\par
+\par
+# Function to handle incoming connections\par
+def handle_client_connection(client_socket):\par
+    try:\par
+        request = client_socket.recv(1024)\par
+        print('Received \{\}'.format(request))\par
+\par
+        # Send a basic response\par
+        response = \{\par
+            'chain': blockchain.chain,\par
+            'length': len(blockchain.chain),\par
+        \}\par
+        client_socket.send(json.dumps(response).encode())\par
+        client_socket.close()\par
+    except Exception as e:\par
+        print(f"Error handling client connection: \{e\}")\par
+        client_socket.close()\par
+\par
+\par
+while True:\par
+    try:\par
+        client_sock, address = app.accept()\par
+        print('Accepted connection from \{\}'.format(address))\par
+        client_handler = threading.Thread(\par
+            target=handle_client_connection,\par
+            args=(client_sock,)\par
+        )\par
+        client_handler.start()\par
+    except Exception as e:\par
+        print(f"Error accepting connection: \{e\}")\par
+}
+ 
